@@ -8,6 +8,7 @@ import MatchingActivity from '../components/MatchingActivity';
 import { saveActivityProgress } from '../utils/progressService';
 import ExampleActivity from '../components/ExampleActivity'; // O la ruta correcta donde tengas guardado tu archivo
 import CodeOrderActivity from '../components/CodeOrderActivity';
+import CircuitActivity from '../components/CircuitActivity';
 export default function MainLayout({ currentUser, setIsLoggedIn, userProgress, refreshGlobalProgress }) {
   const [selectedModuleId, setSelectedModuleId] = useState(1);
   const [completedLessons, setCompletedLessons] = useState([]);
@@ -265,6 +266,30 @@ const handleMatchingSubmit = async () => {
     }
   }
 };
+const handleCircuitSubmit = async (wiresAnswer) => {
+  const result = await saveActivityProgress({
+    currentUser,
+    selectedModuleId,
+    activeLesson,
+    currentStepIndex,
+    completedSteps,
+    lessonAnswers,
+    selectedAnswer: wiresAnswer ?? selectedAnswer,
+    successMessage: '¡Circuito correcto! Todo funciona ⚡'
+  });
+
+  if (result.success) {
+    setCompletedSteps(result.updatedCompleted);
+    setLessonAnswers(result.updatedAnswers);
+    setQuizFeedback(result.feedback);
+
+    if (result.isCompleted) {
+      await fetchProgress(currentUser.id);
+    }
+  } else {
+    console.error("⚠️ [MainLayout] Error al guardar el circuito:", result.error);
+  }
+};
 const handleCodeOrderSubmit = async () => {
   console.log("💾 [MainLayout] Ejecutando handleCodeOrderSubmit para el paso:", currentStepIndex);
   console.log("📦 [MainLayout] selectedAnswer actual a guardar:", selectedAnswer);
@@ -466,7 +491,7 @@ const handleCodeOrderSubmit = async () => {
           </div>
 
           <div className="flex-1 p-8 overflow-y-auto flex items-center justify-center">
-            <div className="max-w-2xl w-full bg-slate-800 border border-slate-700 rounded-3xl p-8 shadow-2xl">
+            <div className={`${activeLesson.tasks?.[currentStepIndex]?.type === 'circuit' ? 'max-w-4xl' : 'max-w-2xl'} w-full bg-slate-800 border border-slate-700 rounded-3xl p-8 shadow-2xl`}>
               
 <div className="p-6">
   { !activeLesson.tasks || activeLesson.tasks.length === 0 ? (
@@ -478,6 +503,7 @@ const handleCodeOrderSubmit = async () => {
     </div>
   ) : activeLesson.tasks[currentStepIndex]?.type === 'theory' ? (
     <TheoryActivity 
+      key={`${selectedModuleId}-${activeLesson.id}-${currentStepIndex}`}
       task={activeLesson.tasks[currentStepIndex]} 
       currentStepIndex={currentStepIndex} 
       totalSteps={activeLesson.tasks.length} 
@@ -485,6 +511,7 @@ const handleCodeOrderSubmit = async () => {
     />
   ) : activeLesson.tasks[currentStepIndex]?.type === 'quiz' ? (
     <QuizActivity 
+      key={`${selectedModuleId}-${activeLesson.id}-${currentStepIndex}`}
       task={activeLesson.tasks[currentStepIndex]} 
       currentStepIndex={currentStepIndex} 
       totalSteps={activeLesson.tasks.length} 
@@ -499,6 +526,7 @@ const handleCodeOrderSubmit = async () => {
     />
   ) : activeLesson.tasks[currentStepIndex]?.type === 'matching' ? (
     <MatchingActivity 
+      key={`${selectedModuleId}-${activeLesson.id}-${currentStepIndex}`}
       task={activeLesson.tasks[currentStepIndex]}
       currentStepIndex={currentStepIndex}
       totalSteps={activeLesson.tasks.length}
@@ -512,6 +540,7 @@ const handleCodeOrderSubmit = async () => {
     />
   ) : activeLesson.tasks[currentStepIndex]?.type === 'example' ? (
     <ExampleActivity 
+      key={`${selectedModuleId}-${activeLesson.id}-${currentStepIndex}`}
       task={activeLesson.tasks[currentStepIndex]}
       currentStepIndex={currentStepIndex}
       totalSteps={activeLesson.tasks.length}
@@ -519,6 +548,7 @@ const handleCodeOrderSubmit = async () => {
     />
   ) : activeLesson.tasks[currentStepIndex]?.type === 'code_order' ? (
 <CodeOrderActivity 
+      key={`${selectedModuleId}-${activeLesson.id}-${currentStepIndex}`}
     task={activeLesson.tasks[currentStepIndex]}
     currentStepIndex={currentStepIndex}
     totalSteps={activeLesson.tasks.length}
@@ -528,6 +558,18 @@ const handleCodeOrderSubmit = async () => {
     quizFeedback={quizFeedback}
     setQuizFeedback={setQuizFeedback}
     onSubmit={() => handleCodeOrderSubmit(currentStepIndex)}
+    isAlreadyCompleted={!!completedSteps[currentStepIndex]}
+  />
+) : activeLesson.tasks[currentStepIndex]?.type === 'circuit' ? (
+  <CircuitActivity
+    key={`${selectedModuleId}-${activeLesson.id}-${currentStepIndex}`}
+    task={activeLesson.tasks[currentStepIndex]}
+    currentStepIndex={currentStepIndex}
+    totalSteps={activeLesson.tasks.length}
+    selectedAnswer={selectedAnswer}
+    setSelectedAnswer={setSelectedAnswer}
+    onSubmit={handleCircuitSubmit}
+    onNext={handleNextStep}
     isAlreadyCompleted={!!completedSteps[currentStepIndex]}
   />
 ) : (
