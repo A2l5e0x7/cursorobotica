@@ -1,0 +1,200 @@
+// Lógica pura (sin React) de la actividad "Arma el Circuito".
+// Un circuito se describe con:
+//   parts:    componentes que aparecen junto al Arduino  [{ id, type, color?, value?, label?, show? }]
+//   wires:    conexiones fijas de la solución             [['uno.D8', 'r1.a'], ...]
+//   branches: ramas "pin -> resistencia -> LED -> GND"    [['uno.D8', 'r1', 'led1'], ...]
+//             (la resistencia puede ir de cualquier lado del LED, las dos formas son válidas)
+// Los componentes simétricos (resistencia, fotorresistencia, pulsador) se pueden conectar al revés.
+
+export const VIEW_W = 760;
+export const PIN_Y = 110;
+const PWM = [3, 5, 6, 9, 10, 11];
+
+export const PART_GEOM = {
+  led: { t: { a: { x: -8, y: -40 }, k: { x: 8, y: -34 } } },
+  resistor: { t: { a: { x: -22, y: -30 }, b: { x: 22, y: -30 } } },
+  button: { t: { a: { x: -12, y: -34 }, b: { x: 12, y: -34 } } },
+  buzzer: { t: { pos: { x: -8, y: -36 }, neg: { x: 8, y: -32 } } },
+  pot: { t: { 1: { x: -16, y: -38 }, w: { x: 0, y: -38 }, 2: { x: 16, y: -38 } } },
+  ldr: { t: { a: { x: -8, y: -36 }, b: { x: 8, y: -36 } } },
+  tmp36: { t: { vcc: { x: -16, y: -38 }, out: { x: 0, y: -38 }, gnd: { x: 16, y: -38 } } },
+  display: {
+    t: {
+      a: { x: -56, y: -66 }, b: { x: -40, y: -66 }, c: { x: -24, y: -66 }, d: { x: -8, y: -66 },
+      e: { x: 8, y: -66 }, f: { x: 24, y: -66 }, g: { x: 40, y: -66 }, com: { x: 56, y: -66 },
+    },
+  },
+  water: { t: { pos: { x: -16, y: -38 }, neg: { x: 0, y: -38 }, s: { x: 16, y: -38 } } },
+};
+
+export const TERMINAL_NAMES = {
+  led: { a: 'pata larga (+)', k: 'pata corta (−)' },
+  buzzer: { pos: 'positivo (+)', neg: 'negativo (−)' },
+};
+
+const SYMMETRIC = new Set(['resistor', 'ldr', 'button']);
+const ALIASES = [['uno.GND', 'uno.GND2', 'uno.GND3']];
+
+// ---------- pines del Arduino ----------
+export function unoPins() {
+  const pins = [];
+  let x = 44;
+  [['3V3', '3.3V', 'pwr'], ['5V', '5V', '5v'], ['GND', 'GND', 'gnd'], ['GND2', 'GND', 'gnd'], ['VIN', 'VIN', 'pwr']].forEach(([id, label, kind]) => {
+    pins.push({ id: 'uno.' + id, label, x, y: PIN_Y, kind });
+    x += 24;
+  });
+  x += 14;
+  for (let i = 0; i < 6; i++) {
+    pins.push({ id: 'uno.A' + i, label: 'A' + i, x, y: PIN_Y, kind: 'analog' });
+    x += 24;
+  }
+  x = 392;
+  pins.push({ id: 'uno.GND3', label: 'GND', x, y: PIN_Y, kind: 'gnd' });
+  x += 24;
+  for (let d = 13; d >= 0; d--) {
+    pins.push({ id: 'uno.D' + d, label: (PWM.includes(d) ? '~' : '') + d, x, y: PIN_Y, kind: 'digital' });
+    x += 24;
+  }
+  return pins;
+}
+
+// ---------- layout automático ----------
+export function layoutTask(task) {
+  const parts = task.parts || [];
+  const n = parts.length;
+  const perRow = n <= 5 ? Math.max(n, 1) : Math.ceil(n / 2);
+  const rows = Math.max(1, Math.ceil(n / perRow));
+  const ROW0 = 250;
+  const ROW_H = 175;
+
+  const terminals = {};
+  unoPins().forEach((p) => { terminals[p.id] = { x: p.x, y: p.y, part: 'uno', kind: p.kind, label: p.label }; });
+
+  const placed = parts.map((p, i) => {
+    const row = Math.floor(i / perRow);
+    const col = i % perRow;
+    const inRow = Math.min(perRow, n - row * perRow);
+    const slot = (VIEW_W - 40) / inRow;
+    const cx = 20 + slot * (col + 0.5);
+    const cy = ROW0 + row * ROW_H;
+    const geom = PART_GEOM[p.type];
+    if (!geom) throw new Error('Componente desconocido: ' + p.type);
+    Object.entries(geom.t).forEach(([name, off]) => {
+      terminals[`${p.id}.${name}`] = { x: cx + off.x, y: cy + off.y, part: p.id, kind: 'part', label: name };
+    });
+    return { ...p, cx, cy };
+  });
+
+  return { width: VIEW_W, height: ROW0 + (rows - 1) * ROW_H + 105, parts: placed, terminals };
+}
+
+// ---------- redes eléctricas ----------
+function makeUF() {
+  const parent = {};
+  const find = (x) => {
+    if (parent[x] === undefined) parent[x] = x;
+    while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+    return x;
+  };
+  const union = (a, b) => { parent[find(a)] = find(b); };
+  return { find, union };
+}
+
+function baseUF() {
+  const uf = makeUF();
+  ALIASES.forEach((g) => g.slice(1).forEach((t) => uf.union(g[0], t)));
+  return uf;
+}
+
+const swapAB = (t, id) => (t === id + '.a' ? id + '.b' : t === id + '.b' ? id + '.a' : t);
+
+export function buildSolutions(task) {
+  let sols = [(task.wires || []).map((w) => [...w])];
+
+  (task.branches || []).forEach(([pin, r, led]) => {
+    const canon = [[pin, r + '.a'], [r + '.b', led + '.a'], [led + '.k', 'uno.GND']];
+    const alt = [[pin, led + '.a'], [led + '.k', r + '.a'], [r + '.b', 'uno.GND']];
+    sols = sols.flatMap((s) => [[...s, ...canon], [...s, ...alt]]);
+  });
+
+  (task.parts || []).filter((p) => SYMMETRIC.has(p.type)).forEach((p) => {
+    if (sols.length > 4096) return;
+    sols = sols.flatMap((s) => [s, s.map(([a, b]) => [swapAB(a, p.id), swapAB(b, p.id)])]);
+  });
+
+  return sols;
+}
+
+export function solutionWires(task) {
+  return buildSolutions(task)[0];
+}
+
+export const partOf = (terminalId) => terminalId.split('.')[0];
+
+export function evaluate(task, wires) {
+  let best = null;
+  for (const sol of buildSolutions(task)) {
+    const exp = baseUF();
+    sol.forEach(([a, b]) => exp.union(a, b));
+    const stu = baseUF();
+    wires.forEach(([a, b]) => stu.union(a, b));
+
+    const wrong = [];
+    wires.forEach(([a, b], i) => { if (exp.find(a) !== exp.find(b)) wrong.push(i); });
+    const missing = sol.filter(([a, b]) => stu.find(a) !== stu.find(b));
+    const score = wrong.length * 100 + missing.length;
+
+    if (!best || score < best.score) best = { score, wrong, missing, sol };
+    if (score === 0) break;
+  }
+
+  const burned = new Set();
+  let unoShort = false;
+  best.wrong.forEach((i) => {
+    const [a, b] = wires[i];
+    const pa = partOf(a);
+    const pb = partOf(b);
+    if (pa === 'uno' && pb === 'uno') unoShort = true;
+    [pa, pb].forEach((p) => { if (p !== 'uno') burned.add(p); });
+  });
+
+  const missingTerminals = new Set();
+  best.missing.forEach(([a, b]) => { missingTerminals.add(a); missingTerminals.add(b); });
+
+  return {
+    ok: wires.length > 0 && best.score === 0,
+    wrong: best.wrong,
+    missing: best.missing,
+    missingTerminals: [...missingTerminals],
+    burned: [...burned],
+    unoShort,
+    solution: best.sol,
+  };
+}
+
+// ---------- apariencia de los cables ----------
+const WIRE_COLORS = ['#2563eb', '#16a34a', '#eab308', '#f97316', '#9333ea', '#0891b2'];
+
+export function wireColor(a, b, index) {
+  const ends = [a, b];
+  if (ends.some((t) => t.startsWith('uno.GND'))) return '#111827';
+  if (ends.some((t) => t === 'uno.5V' || t === 'uno.3V3' || t === 'uno.VIN')) return '#dc2626';
+  return WIRE_COLORS[index % WIRE_COLORS.length];
+}
+
+export function wirePath(p1, p2) {
+  const dx = Math.abs(p2.x - p1.x);
+  const fromUno = (p) => p.y <= PIN_Y + 1;
+  if (fromUno(p1) !== fromUno(p2)) {
+    const [top, bottom] = fromUno(p1) ? [p1, p2] : [p2, p1];
+    const k = Math.max(40, (bottom.y - top.y) * 0.55);
+    const d = `M ${top.x} ${top.y} C ${top.x} ${top.y + k}, ${bottom.x} ${bottom.y - k}, ${bottom.x} ${bottom.y}`;
+    return d;
+  }
+  if (fromUno(p1) && fromUno(p2)) {
+    const k = 28 + dx * 0.12;
+    return `M ${p1.x} ${p1.y} C ${p1.x} ${p1.y + k}, ${p2.x} ${p2.y + k}, ${p2.x} ${p2.y}`;
+  }
+  const k = 38 + dx * 0.14;
+  return `M ${p1.x} ${p1.y} C ${p1.x} ${p1.y - k}, ${p2.x} ${p2.y - k}, ${p2.x} ${p2.y}`;
+}
